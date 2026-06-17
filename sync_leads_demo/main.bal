@@ -1,22 +1,36 @@
 import ballerina/log;
 import ballerina/sql;
 import ballerinax/postgresql;
-import ballerinax/postgresql.driver as _;
 import ballerinax/salesforce;
+import ballerinax/postgresql.driver as _;
 
 configurable string sfUsername = ?;
 configurable string sfPassword = ?;
-configurable string dbHost = ?;
-configurable int dbPort = ?;
+
+configurable string dbHost = "localhost";
+configurable int dbPort = 5432;
 configurable string dbUsername = ?;
 configurable string dbPassword = ?;
 configurable string dbName = ?;
 
-type LeadRecord record {|
+type SfLeadPayload record {
+    string Name = "";
+    string Company = "";
+    string IsConverted = "false";
+    string CleanStatus = "";
+};
+
+type LeadRecord record {
     string name;
     string company;
     boolean isHighPriority;
-|};
+};
+
+function mapToLeadRecord(SfLeadPayload sfLead) returns LeadRecord => {
+    name: sfLead.Name,
+    company: sfLead.Company,
+    isHighPriority: sfLead.IsConverted =="false" && sfLead.CleanStatus == "Pending"
+};
 
 final postgresql:Client dbClient = check new (
     host = dbHost,
@@ -26,47 +40,41 @@ final postgresql:Client dbClient = check new (
     port = dbPort
 );
 
-listener salesforce:Listener sfListener = new (listenerConfig = {
+function init() returns error? {
+   _ = check dbClient->execute(`
+        CREATE TABLE IF NOT EXISTS sfleads (
+            Name VARCHAR(255),
+            Company VARCHAR(255),
+            isHighPriority BOOLEAN
+        )
+    `);
+    log:printInfo("sfleads table ready");
+}
+
+listener salesforce:Listener sfListener = new ({
     auth: {
         username: sfUsername,
         password: sfPassword
     }
 });
 
-function mapToLeadRecord(string name, string company, boolean isConverted, string cleanStatus) returns LeadRecord => {
-    name: name,
-    company: company,
-    isHighPriority: !isConverted && cleanStatus == "Pending"
-};
+service salesforce:CdcService "/data/LeadChangeEvent" on sfListener {
 
-service "/data/LeadChangeEvent" on sfListener {
-
-    remote function onCreate(salesforce:EventData payload) returns error? {
-        map<json> changedData = payload.changedData;
-
-        string name = (changedData["Name"] ?: "").toString();
-        string company = (changedData["Company"] ?: "").toString();
-        json isConvertedRaw = changedData["IsConverted"] ?: false;
-        boolean isConverted = isConvertedRaw is boolean ? isConvertedRaw : false;
-        string cleanStatus = (changedData["CleanStatus"] ?: "").toString();
-
-        LeadRecord leadRecord = mapToLeadRecord(
-            name = name,
-            company = company,
-            isConverted = isConverted,
-            cleanStatus = cleanStatus
-        );
-
-        sql:ExecutionResult _ = check dbClient->execute(`
-            INSERT INTO Leads (Name, Company, isHighPriority)
+    remote function onCreate(salesforce:EventData payload) {
+        SfLeadPayload|error sfLead = payload.changedData.cloneWithType(SfLeadPayload);
+        if sfLead is error {
+            log:printError("Failed to parse lead payload", sfLead);
+            return;
+        }
+        LeadRecord leadRecord = mapToLeadRecord(sfLead);
+        sql:ExecutionResult|sql:Error result = dbClient->execute(`INSERT INTO sfleads (Name, Company, isHighPriority)
             VALUES (${leadRecord.name}, ${leadRecord.company}, ${leadRecord.isHighPriority})
         `);
-
-        log:printInfo("Lead synced to database",
-            name = leadRecord.name,
-            company = leadRecord.company,
-            isHighPriority = leadRecord.isHighPriority
-        );
+        if result is sql:Error {
+            log:printError(string `Failed to insert lead: ${leadRecord.name}`, result);
+            return;
+        }
+        log:printInfo(string `Synced lead: ${leadRecord.name}`);
     }
 
     remote function onUpdate(salesforce:EventData payload) returns error? {}
