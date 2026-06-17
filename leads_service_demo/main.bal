@@ -28,9 +28,20 @@ service /sf on new http:Listener(9090) {
     resource function get leads() returns Lead[]|error {
         log:printInfo("Loading leads info");
         stream<Lead, error?> leadStream = dbClient->query(
-            `SELECT Name, Company, isHighPriority FROM Leads`
+            `SELECT Name, Company, isHighPriority FROM sfleads`
         ); 
         return from Lead lead in leadStream select lead;
     }
 
+}
+
+function init() returns error? {
+   _ = check dbClient->execute(`
+        CREATE TABLE IF NOT EXISTS sfleads (
+            Name VARCHAR(255),
+            Company VARCHAR(255),
+            isHighPriority BOOLEAN
+        )
+    `);
+    log:printInfo("sfleads table ready");
 }
