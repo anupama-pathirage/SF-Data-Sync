@@ -1,6 +1,7 @@
 import ballerina/http;
 import ballerinax/postgresql;
 import ballerinax/postgresql.driver as _;
+import ballerina/log;
 
 configurable string dbHost = ?;
 configurable int dbPort = ?;
@@ -25,20 +26,11 @@ final postgresql:Client dbClient = check new (
 service /sf on new http:Listener(9090) {
 
     resource function get leads() returns Lead[]|error {
-        stream<Lead, error?> resultStream = dbClient->query(
+        log:printInfo("Loading leads info");
+        stream<Lead, error?> leadStream = dbClient->query(
             `SELECT Name, Company, isHighPriority FROM Leads`
-        );
-
-        Lead[] leads = [];
-
-        check from Lead lead in resultStream
-            do {
-                leads.push(lead);
-            };
-
-        check resultStream.close();
-
-        return leads;
+        ); 
+        return from Lead lead in leadStream select lead;
     }
 
 }
